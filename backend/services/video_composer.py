@@ -36,7 +36,41 @@ def compose_video(
     output_path = output_dir / output_filename
 
     has_audio = _has_audio_stream(concat_video_path)
-    subtitle_path_escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+
+    # Try subtitle methods in order; fail the task if none work
+    errors: list[str] = []
+
+    # Method 1: subtitles filter with absolute path
+    err = _compose_with_subtitles_filter(
+        concat_video_path, concat_audio_path, subtitle_path,
+        has_audio, output_path,
+    )
+    if err is None:
+        return output_filename
+    errors.append(f"subtitles filter: {err}")
+
+    # Method 2: burn subtitles via drawtext (no libass dependency)
+    err = _compose_with_drawtext(
+        concat_video_path, concat_audio_path, subtitle_path,
+        has_audio, output_path,
+    )
+    if err is None:
+        return output_filename
+    errors.append(f"drawtext: {err}")
+
+    raise RuntimeError(
+        "字幕合成失败，无法生成带字幕的视频。\n" + "\n".join(errors)
+    )
+
+
+def _compose_with_subtitles_filter(
+    video_path: Path, audio_path: Path, subtitle_path: Path,
+    has_audio: bool, output_path: Path,
+) -> str | None:
+    """Try composing with the ASS/SRT subtitles filter. Returns None on success, error string on failure."""
+    # Use absolute path and escape for ffmpeg filter syntax
+    sub_abs = str(subtitle_path.resolve())
+    sub_escaped = sub_abs.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 
     if has_audio:
         audio_filter = (
@@ -47,17 +81,18 @@ def compose_video(
     else:
         audio_filter = "[1:a]volume=1.0[aout]"
 
+    filter_complex = (
+        f"{audio_filter};"
+        f"[0:v]subtitles='{sub_escaped}':force_style="
+        f"'FontName=sans-serif,FontSize=22,PrimaryColour=&H00FFFFFF,"
+        f"OutlineColour=&H00000000,Outline=2,MarginV=30'[vout]"
+    )
+
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(concat_video_path),
-        "-i", str(concat_audio_path),
-        "-filter_complex",
-        (
-            f"{audio_filter};"
-            f"[0:v]subtitles='{subtitle_path_escaped}':force_style="
-            f"'FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-            f"Outline=2,MarginV=30'[vout]"
-        ),
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-filter_complex", filter_complex,
         "-map", "[vout]",
         "-map", "[aout]",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -68,25 +103,78 @@ def compose_video(
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
-        output_path = _compose_without_subtitles(
-            concat_video_path, concat_audio_path, has_audio, output_dir
-        )
-        return output_path.name
+        return result.stderr[-500:]
+    return None
 
-    return output_filename
+
+def _compose_with_drawtext(
+    video_path: Path, audio_path: Path, subtitle_path: Path,
+    has_audio: bool, output_path: Path,
+) -> str | None:
+    """Burn subtitles using drawtext filter (doesn't require libass). Returns None on success."""
+    import pysrt
+
+    subs = pysrt.open(str(subtitle_path), encoding="utf-8")
+    if not subs:
+        return "Empty subtitle file"
+
+    # Build drawtext filter chain from SRT entries
+    drawtext_filters = []
+    for sub in subs:
+        start_sec = (sub.start.hours * 3600 + sub.start.minutes * 60
+                     + sub.start.seconds + sub.start.milliseconds / 1000.0)
+        end_sec = (sub.end.hours * 3600 + sub.end.minutes * 60
+                   + sub.end.seconds + sub.end.milliseconds / 1000.0)
+
+        # Escape text for drawtext: single quotes and backslashes
+        text = sub.text.replace("\\", "\\\\").replace("'", "'\\''")
+        text = text.replace(":", "\\:").replace("%", "%%")
+
+        dt = (
+            f"drawtext=text='{text}':"
+            f"fontsize=22:fontcolor=white:borderw=2:bordercolor=black:"
+            f"x=(w-text_w)/2:y=h-60:"
+            f"enable='between(t,{start_sec:.3f},{end_sec:.3f})'"
+        )
+        drawtext_filters.append(dt)
+
+    video_filter = ",".join(drawtext_filters)
+
+    if has_audio:
+        audio_filter = (
+            "[0:a]volume=0.15[bg];"
+            "[1:a]volume=1.0[narr];"
+            "[bg][narr]amix=inputs=2:duration=longest[aout]"
+        )
+        filter_complex = f"{audio_filter};[0:v]{video_filter}[vout]"
+    else:
+        audio_filter = "[1:a]volume=1.0[aout]"
+        filter_complex = f"{audio_filter};[0:v]{video_filter}[vout]"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        return result.stderr[-500:]
+    return None
 
 
 def _extract_and_align_clip(
     video_path: Path, start: float, end: float,
     target_duration: float, output_path: Path,
 ):
-    """Extract a clip from [start, end] and adjust its duration to match target_duration.
-
-    Strategy:
-    - If speed adjustment (0.5x~2.0x) can cover the mismatch → adjust playback speed.
-    - If clip is much shorter than target → freeze the last frame to fill.
-    - If clip is much longer than target → speed up to cap, then truncate.
-    """
+    """Extract a clip from [start, end] and adjust its duration to match target_duration."""
     clip_duration = end - start
     if clip_duration <= 0:
         clip_duration = 0.1
@@ -128,16 +216,11 @@ def _extract_with_freeze(
     video_path: Path, start: float, end: float,
     target_duration: float, output_path: Path,
 ):
-    """Extract clip at normal speed, then freeze the last frame to reach target_duration.
-
-    Uses tpad filter to pad the end with the last frame.
-    """
+    """Extract clip at normal speed, then freeze the last frame to reach target_duration."""
     clip_duration = end - start
     pad_duration = target_duration - clip_duration
     if pad_duration < 0:
         pad_duration = 0
-
-    pad_frames = int(pad_duration * 25)
 
     cmd = [
         "ffmpeg", "-y",
@@ -181,37 +264,6 @@ def _concat_video_clips(clips: list[Path], output_path: Path):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(f"Video concat failed: {result.stderr[-300:]}")
-
-
-def _compose_without_subtitles(
-    video_path: Path, audio_path: Path, has_audio: bool, output_dir: Path
-) -> Path:
-    """Fallback: compose without subtitle filter if subtitles filter fails."""
-    output_path = output_dir / "output.mp4"
-
-    if has_audio:
-        audio_filter = (
-            "[0:a]volume=0.15[bg];[1:a]volume=1.0[narr];"
-            "[bg][narr]amix=inputs=2:duration=longest[aout]"
-        )
-    else:
-        audio_filter = "[1:a]volume=1.0[aout]"
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(video_path),
-        "-i", str(audio_path),
-        "-filter_complex", audio_filter,
-        "-map", "0:v", "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        str(output_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg fallback failed: {result.stderr[-500:]}")
-    return output_path
 
 
 def _has_audio_stream(video_path: Path) -> bool:

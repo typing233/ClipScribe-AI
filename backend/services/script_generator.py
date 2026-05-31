@@ -73,12 +73,59 @@ def _generate_fallback_script(video_info: dict, style: str) -> list[ScriptSegmen
     return segments
 
 
+def _validate_and_fix_segments(
+    segments: list[ScriptSegment], duration: float
+) -> list[ScriptSegment]:
+    """Validate and fix segments to cover [0, duration] without gaps or overlaps."""
+    if not segments:
+        return [ScriptSegment(start_time=0.0, end_time=duration, text="这段视频的内容引人入胜。")]
+
+    segments = sorted(segments, key=lambda s: s.start_time)
+
+    # Clamp all times within [0, duration]
+    fixed = []
+    for seg in segments:
+        start = max(0.0, min(seg.start_time, duration))
+        end = max(0.0, min(seg.end_time, duration))
+        if end <= start:
+            continue
+        fixed.append(ScriptSegment(start_time=round(start, 3), end_time=round(end, 3), text=seg.text))
+
+    if not fixed:
+        return [ScriptSegment(start_time=0.0, end_time=duration, text="这段视频的内容引人入胜。")]
+
+    # Remove overlaps: each segment starts no earlier than the previous one's end
+    deoverlapped = [fixed[0]]
+    for seg in fixed[1:]:
+        prev_end = deoverlapped[-1].end_time
+        if seg.start_time < prev_end:
+            seg = ScriptSegment(start_time=prev_end, end_time=max(seg.end_time, prev_end + 0.1), text=seg.text)
+        if seg.end_time > duration:
+            seg = ScriptSegment(start_time=seg.start_time, end_time=duration, text=seg.text)
+        if seg.end_time > seg.start_time:
+            deoverlapped.append(seg)
+    fixed = deoverlapped
+
+    # Fix head: first segment must start at 0
+    if fixed[0].start_time > 0.01:
+        fixed[0] = ScriptSegment(start_time=0.0, end_time=fixed[0].end_time, text=fixed[0].text)
+
+    # Fix tail: last segment must end at duration
+    if fixed[-1].end_time < duration - 0.01:
+        fixed[-1] = ScriptSegment(start_time=fixed[-1].start_time, end_time=round(duration, 3), text=fixed[-1].text)
+
+    return fixed
+
+
 async def generate_script(
     keyframes_b64: list[str], video_info: dict, style: str
 ) -> list[ScriptSegment]:
     """Call Claude API with keyframes to generate commentary script."""
+    duration = video_info["duration"]
+
     if not ANTHROPIC_API_KEY:
-        return _generate_fallback_script(video_info, style)
+        segments = _generate_fallback_script(video_info, style)
+        return _validate_and_fix_segments(segments, duration)
 
     client_kwargs = {"api_key": ANTHROPIC_API_KEY}
     if ANTHROPIC_BASE_URL:
@@ -86,7 +133,6 @@ async def generate_script(
 
     try:
         client = anthropic.Anthropic(**client_kwargs)
-        duration = video_info["duration"]
         keyframe_times = video_info["keyframe_times"]
 
         style_instruction = STYLE_PROMPTS.get(style, STYLE_PROMPTS["normal"])
@@ -153,8 +199,9 @@ async def generate_script(
         if not segments:
             raise RuntimeError("LLM returned empty script")
 
-        return segments
+        return _validate_and_fix_segments(segments, duration)
 
     except Exception as e:
         print(f"[ScriptGenerator] API call failed: {e}, using fallback")
-        return _generate_fallback_script(video_info, style)
+        segments = _generate_fallback_script(video_info, style)
+        return _validate_and_fix_segments(segments, duration)
