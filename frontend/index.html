@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipScribe AI - 影视解说视频生成</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎬 ClipScribe AI</h1>
+            <p class="subtitle">影视解说视频自动生成工具</p>
+        </header>
+
+        <main>
+            <!-- Upload Section -->
+            <section class="card" id="upload-section">
+                <h2>1. 上传视频</h2>
+                <div class="upload-area" id="upload-area">
+                    <div class="upload-icon">📁</div>
+                    <p>拖拽视频文件到此处，或点击选择文件</p>
+                    <p class="hint">支持 MP4, MKV, AVI, MOV 等格式，最大 500MB</p>
+                    <input type="file" id="file-input" accept="video/*" hidden>
+                </div>
+                <div class="file-info" id="file-info" hidden>
+                    <span id="file-name"></span>
+                    <span id="file-size"></span>
+                    <button class="btn-small" id="clear-file">✕</button>
+                </div>
+            </section>
+
+            <!-- Config Section -->
+            <section class="card" id="config-section">
+                <h2>2. 选择解说风格</h2>
+                <div class="style-options">
+                    <label class="style-option">
+                        <input type="radio" name="style" value="normal" checked>
+                        <span class="style-card">
+                            <span class="style-icon">🎙️</span>
+                            <span class="style-name">正式解说</span>
+                            <span class="style-desc">客观清晰，纪录片风格</span>
+                        </span>
+                    </label>
+                    <label class="style-option">
+                        <input type="radio" name="style" value="humorous">
+                        <span class="style-card">
+                            <span class="style-icon">😄</span>
+                            <span class="style-name">幽默吐槽</span>
+                            <span class="style-desc">轻松搞笑，网络风格</span>
+                        </span>
+                    </label>
+                    <label class="style-option">
+                        <input type="radio" name="style" value="suspense">
+                        <span class="style-card">
+                            <span class="style-icon">🔍</span>
+                            <span class="style-name">悬疑紧张</span>
+                            <span class="style-desc">制造悬念，引人入胜</span>
+                        </span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Generate Button -->
+            <section class="card center">
+                <button class="btn-primary" id="generate-btn" disabled>开始生成解说视频</button>
+            </section>
+
+            <!-- Progress Section -->
+            <section class="card" id="progress-section" hidden>
+                <h2>生成进度</h2>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <p class="progress-text" id="progress-text">准备中...</p>
+                <div class="steps">
+                    <div class="step" id="step-analyzing">
+                        <span class="step-dot"></span>
+                        <span>视频分析</span>
+                    </div>
+                    <div class="step" id="step-generating_script">
+                        <span class="step-dot"></span>
+                        <span>文案生成</span>
+                    </div>
+                    <div class="step" id="step-synthesizing_voice">
+                        <span class="step-dot"></span>
+                        <span>语音合成</span>
+                    </div>
+                    <div class="step" id="step-composing_video">
+                        <span class="step-dot"></span>
+                        <span>视频合成</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Result Section -->
+            <section class="card" id="result-section" hidden>
+                <h2>生成结果</h2>
+                <div class="result-content">
+                    <video id="result-video" controls></video>
+                    <div class="result-actions">
+                        <button class="btn-primary" id="download-btn">下载视频</button>
+                    </div>
+                    <div class="script-panel">
+                        <h3>解说文案</h3>
+                        <div id="script-content"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Error Section -->
+            <section class="card error" id="error-section" hidden>
+                <h2>出错了</h2>
+                <p id="error-text"></p>
+                <button class="btn-small" id="retry-btn">重试</button>
+            </section>
+        </main>
+
+        <footer>
+            <p>ClipScribe AI - 基于 Claude + Edge-TTS + FFmpeg 构建</p>
+        </footer>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
